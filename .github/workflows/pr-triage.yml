@@ -1,0 +1,17 @@
+name: PR triage
+
+# Labels PRs that change code without linking an issue. It never fails or closes
+# a PR. See
+# https://github.com/eduralph/.github/blob/main/.github/workflows/flag-unlinked-pr.yml
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  flag:
+    uses: eduralph/.github/.github/workflows/flag-unlinked-pr.yml@main
