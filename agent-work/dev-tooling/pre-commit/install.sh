@@ -78,8 +78,11 @@ require_pre_commit
 
 if [[ "$mode" == "install" ]]; then
     # gramps-testbed: standard layout, in-place install.
-    echo "==> gramps-testbed: installing pre-commit (root config)"
-    ( cd "$TESTBED_ROOT" && pre-commit install --overwrite )
+    # The testbed's own hook is the secret guard's: it reads reviewed copies of the root config
+    # from the git directory. `pre-commit install --overwrite` would replace it with a hook that
+    # reads the checked-out config.
+    echo "==> gramps-testbed: activating the secret guard (root config)"
+    ( cd "$TESTBED_ROOT" && s=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && /bin/sh -c "$s" activate )
 
     action_install "gramps"        "$GRAMPS_REPO" "$GRAMPS_CONFIG"
     action_install "addons-source" "$ADDONS_REPO" "$ADDONS_CONFIG"
@@ -88,8 +91,8 @@ if [[ "$mode" == "install" ]]; then
     echo "Done. Hooks active on next 'git commit' in each repo."
     echo "Skip with 'git commit --no-verify' (only if you know why)."
 else
-    echo "==> gramps-testbed: uninstalling pre-commit"
-    ( cd "$TESTBED_ROOT" && pre-commit uninstall )
+    echo "==> gramps-testbed: removing the secret guard"
+    ( cd "$TESTBED_ROOT" && s=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && /bin/sh -c "$s" activate --uninstall )
     action_uninstall "gramps"        "$GRAMPS_REPO"
     action_uninstall "addons-source" "$ADDONS_REPO"
 fi

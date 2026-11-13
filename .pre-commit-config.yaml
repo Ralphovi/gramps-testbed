@@ -1,7 +1,21 @@
+# Secret guard: blocks commits that would publish credentials.
+# Activate once per clone, with the default branch's reviewed script (re-run it after this
+# file or the script changes there):
+#   pipx install pre-commit==4.7.0
+#   s=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && /bin/sh -c "$s" activate
+# The hook reads copies of this file and of the gitleaks policy kept in the git directory
+# and refuses a checked-out or staged .gitleaksignore, so a checked-out branch (a fork PR)
+# cannot redefine what runs on commit. Do not use plain `pre-commit install`: its hook reads
+# the checked-out file.
+#
+# Why: Claude Code saves approved shell commands verbatim (tokens included) to
+# .claude/settings.local.json. .gitignore does not stop `git add -f`, a fresh clone
+# without the global ignore, or a file created before the ignore rule existed.
+#
 # Pre-commit config for gramps-testbed itself.
 #
 # Lives at repo root (standard pre-commit layout) so cloning the
-# testbed + running `pre-commit install` is the only setup needed.
+# testbed + activating it as the secret-guard header above says is the only setup needed.
 # The gramps and addons-source fork configs live under
 # agent-work/dev-tooling/pre-commit/ and are installed via install.sh.
 #
@@ -58,6 +72,18 @@ repos:
         files: '(^|/)(\.claude/settings\.local\.json[^/]*|CLAUDE\.local\.md|\.credentials\.json|\.env)$'
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # v8.30.1
     hooks:
       - id: gitleaks
+        args: [--ignore-gitleaks-allow]   # a branch's `gitleaks:allow` comments are not trusted
+      # Scans the staged blobs themselves, as Git will commit them: the hook above reads
+      # `git diff`, which a branch's .gitattributes can turn into "Binary files differ"
+      # (`-diff`), and an encoding attribute can make the checkout differ from the index.
+      # No filename reaches gitleaks, so none can be read as an option; ":0:" names stage 0
+      # explicitly, so a filename containing a colon cannot select another blob.
+      - id: gitleaks
+        alias: gitleaks-staged-blobs
+        name: Detect hardcoded secrets (staged blobs, git attributes ignored)
+        entry: sh -c 'for f in "$@"; do git cat-file -e ":0:$f" || exit 1; git cat-file blob ":0:$f" | gitleaks stdin --no-banner --redact --ignore-gitleaks-allow || exit 1; done' --
+        pass_filenames: true
+        types: [file]
