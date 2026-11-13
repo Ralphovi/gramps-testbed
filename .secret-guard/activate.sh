@@ -22,6 +22,15 @@
 #   that runs activation.
 # - A core.hooksPath hook outside every checkout is yours: activation checks that it contains
 #   the runner line, not what runs before it.
+# - An absolute hooks path (or a symlink target) that passes through a checkout directory and
+#   back out with `..` is checked at its final target only, not at the directory it crosses.
+# - A branch that commits a protected name (.claude/settings.local.json and the like) as a
+#   symlink to an ordinary file hides later writes through that name from the path rule;
+#   gitleaks still scans the target's content.
+# - pre-commit is checked against this repository's worktrees only, not other repositories'.
+# - A separate git directory placed inside an ignored path of a worktree is not detected.
+# - --uninstall removes only hooks with the managed marker; an older two-line guard hook
+#   from before the marker stays and must be deleted by hand.
 # - --no-verify skips every hook; push protection on GitHub is the backstop.
 set -eu
 
@@ -42,7 +51,7 @@ esac
 
 d=$(git rev-parse --path-format=absolute --git-common-dir)
 hook="$d/hooks/pre-commit"
-mark="# secret-guard managed hook v8"
+mark="# secret-guard managed hook v9"
 # The line a core.hooksPath hook (outside every checkout) must contain to run the guard.
 req='exec "$(git rev-parse --path-format=absolute --git-common-dir)/secret-guard-run" "$@"'
 
@@ -169,6 +178,12 @@ if [ "$hooks_set" = yes ]; then
       "Make $hooks_path/pre-commit executable and end it with this exact line:" "  $req"
   fi
 else
+  # A clone made with an empty template has no hooks directory: check where it would go
+  # (the git directory itself), then create it, so the checks below see a real directory.
+  if [ ! -e "$d/hooks" ] && [ ! -L "$d/hooks" ]; then
+    chain_unsafe any "$d" && die "the git directory $d is in or resolves into a checkout; refusing."
+    mkdir "$d/hooks"
+  fi
   if chain_unsafe any "$d/hooks" || { { [ -e "$hook" ] || [ -L "$hook" ]; } && chain_unsafe any "$hook"; }; then
     die "$d/hooks, or the pre-commit hook in it, is in or resolves into a checkout of this" \
       "repository, so a branch could replace it. Make $d/hooks a plain directory and remove" \
