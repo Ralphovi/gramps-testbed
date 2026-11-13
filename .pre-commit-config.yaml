@@ -2,11 +2,11 @@
 # Activate once per clone, with the default branch's reviewed script (re-run it after this
 # file or the script changes there):
 #   pipx install pre-commit==4.7.0
-#   s=$(git show origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate
+#   s=$(git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate
 # The hook reads copies of this file and of the gitleaks policy kept in the git directory
-# and refuses a checked-out .gitleaksignore, so a checked-out branch (a fork PR) cannot
-# redefine what runs on commit. Do not use plain `pre-commit install`: its hook reads the
-# checked-out file.
+# and refuses a checked-out or staged .gitleaksignore, so a checked-out branch (a fork PR)
+# cannot redefine what runs on commit. Do not use plain `pre-commit install`: its hook reads
+# the checked-out file.
 #
 # Why: Claude Code saves approved shell commands verbatim (tokens included) to
 # .claude/settings.local.json. .gitignore does not stop `git add -f`, a fresh clone
@@ -75,3 +75,12 @@ repos:
     rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # v8.30.1
     hooks:
       - id: gitleaks
+        args: [--ignore-gitleaks-allow]   # a branch's `gitleaks:allow` comments are not trusted
+      # Scans the staged files themselves: the hook above reads `git diff`, which a branch's
+      # .gitattributes can turn into "Binary files differ" (`-diff`). pre-commit has hidden
+      # unstaged changes, so the files on disk are the staged content.
+      - id: gitleaks
+        alias: gitleaks-staged-files
+        name: Detect hardcoded secrets (staged files, git attributes ignored)
+        entry: sh -c 'for f in "$@"; do gitleaks dir --no-banner --redact --ignore-gitleaks-allow "$f" || exit 1; done' --
+        pass_filenames: true

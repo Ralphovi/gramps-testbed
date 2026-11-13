@@ -3,27 +3,47 @@
 # reviewed copy of this script, never the checked-out one:
 #
 #   pipx install pre-commit==4.7.0
-#   s=$(git show origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate
+#   s=$(git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate
 #
 # Re-run it after .pre-commit-config.yaml or this script changes on the default branch.
-# Remove the guard with:  s=$(git show origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate --uninstall
+# Remove the guard: the same command with `activate --uninstall`.
 #
 # Why not `pre-commit install`: its hook reads the checked-out .pre-commit-config.yaml, and
 # gitleaks reads a checked-out .gitleaks.toml and .gitleaksignore, so checking out a fork PR
 # and committing would run the hooks and scanning policy that branch defines. The hook
 # written here reads copies kept in the git directory, pins gitleaks to its built-in rules,
-# and refuses to commit while a .gitleaksignore is in the checkout.
+# and refuses to commit while a .gitleaksignore is in the checkout or the index.
 set -eu
 
-ref=${SECRET_GUARD_REF:-origin/HEAD}
+ref=${SECRET_GUARD_REF:-refs/remotes/origin/HEAD}
+case $ref in
+  refs/*|HEAD) ;;   # fully qualified: a branch named origin/HEAD cannot shadow it
+  *) echo "secret guard: SECRET_GUARD_REF must be HEAD or a full refs/... name, not '$ref'" >&2; exit 1;;
+esac
+
 d=$(git rev-parse --path-format=absolute --git-common-dir)
+top=$(git rev-parse --show-toplevel)
 hook="$d/hooks/pre-commit"
-mark="# secret-guard managed hook v3"
-# The line a core.hooksPath hook must contain to run the guard.
+mark="# secret-guard managed hook v4"
+# The line a core.hooksPath hook (outside the checkout) must contain to run the guard.
 req='exec "$(git rev-parse --path-format=absolute --git-common-dir)/secret-guard-run" "$@"'
 
+hooks_path=$(git config core.hooksPath || true)
+hp=""
+if [ -n "$hooks_path" ]; then
+  case $hooks_path in
+    /*) hp=$hooks_path;;
+    *) hp="$top/$hooks_path";;
+  esac
+fi
+
 if [ "${1:-}" = --uninstall ]; then
-  if grep -qxF "$mark" "$hook" 2>/dev/null; then
+  if [ -n "$hp" ] && grep -qxF "$req" "$hp/pre-commit" 2>/dev/null; then
+    echo "secret guard: $hp/pre-commit still runs the guard; remove this line from it first:" >&2
+    echo "  $req" >&2
+    exit 1
+  fi
+  if grep -qxF "$mark" "$hook" 2>/dev/null || grep -q 'secret-guard managed hook' "$hook" 2>/dev/null; then
     rm -f "$hook"
     if [ -e "$hook.legacy" ]; then mv "$hook.legacy" "$hook"; fi
   fi
@@ -39,6 +59,17 @@ case $pc in
   *) echo "secret guard: pre-commit resolves to '$pc', not an absolute path" >&2; exit 1;;
 esac
 
+# Refuse a hooks directory inside the checkout before writing anything: a branch can rewrite it.
+if [ -n "$hp" ]; then
+  case $hp/ in
+    "$top"/*)
+      echo "secret guard: core.hooksPath ($hooks_path) is inside the checkout, so a checked-out" >&2
+      echo "branch can replace its hooks. Unset it (git config --unset core.hooksPath), copy any" >&2
+      echo "hook you still want into $d/hooks after reviewing it, then re-run." >&2
+      exit 1;;
+  esac
+fi
+
 git show "$ref:.pre-commit-config.yaml" > "$d/secret-guard.yaml"
 # Gitleaks' built-in rules. GITLEAKS_CONFIG outranks a .gitleaks.toml in the checkout.
 printf '[extend]\nuseDefault = true\n' > "$d/secret-guard-gitleaks.toml"
@@ -53,9 +84,12 @@ cat > "$d/secret-guard-run" <<'EOF'
 set -eu
 d=$(git rev-parse --path-format=absolute --git-common-dir)
 top=$(git rev-parse --show-toplevel)
-if [ -e "$top/.gitleaksignore" ]; then
-  echo "secret guard: refusing to commit while .gitleaksignore is in the checkout;" >&2
-  echo "gitleaks would load its suppressions. Remove it, or commit with --no-verify after review." >&2
+# gitleaks loads <checkout>/.gitleaksignore unconditionally, and pre-commit restores the
+# indexed copy while it hides unstaged changes, so refuse one in either place.
+if [ -e "$top/.gitleaksignore" ] || git cat-file -e :.gitleaksignore 2>/dev/null; then
+  echo "secret guard: refusing to commit while .gitleaksignore is in the checkout or the index;" >&2
+  echo "gitleaks would load its suppressions. Remove and unstage it (git rm --cached), or commit" >&2
+  echo "with --no-verify after reviewing it." >&2
   exit 1
 fi
 pc=$(cat "$d/secret-guard-pre-commit")
@@ -63,12 +97,7 @@ GITLEAKS_CONFIG="$d/secret-guard-gitleaks.toml" exec "$pc" run --config "$d/secr
 EOF
 chmod +x "$d/secret-guard-run"
 
-hooks_path=$(git config core.hooksPath || true)
-if [ -n "$hooks_path" ]; then
-  case $hooks_path in
-    /*) hp=$hooks_path;;
-    *) hp="$(git rev-parse --show-toplevel)/$hooks_path";;
-  esac
+if [ -n "$hp" ]; then
   if [ -x "$hp/pre-commit" ] && grep -qxF "$req" "$hp/pre-commit"; then
     echo "secret guard: copies refreshed from $ref; $hooks_path/pre-commit runs the guard"
     exit 0
@@ -80,23 +109,23 @@ if [ -n "$hooks_path" ]; then
 fi
 
 mkdir -p "$d/hooks"
-if [ -e "$hook" ] && ! grep -qxF "$mark" "$hook"; then
+if [ -e "$hook" ] && ! grep -q 'secret-guard managed hook' "$hook"; then
   if grep -q 'File generated by pre-commit' "$hook" || grep -q 'secret-guard.yaml' "$hook"; then
     rm -f "$hook"   # pre-commit's own hook (reads the checkout) or an older guard hook
-  elif [ -e "$hook.legacy" ]; then
-    echo "secret guard: $hook and $hook.legacy both exist; merge them by hand, then re-run" >&2
-    exit 1
   else
-    mv "$hook" "$hook.legacy"
-    echo "secret guard: kept the existing hook as $hook.legacy; it runs before the guard"
+    # An unknown hook may run checkout content; keeping it is the user's call, after review.
+    echo "secret guard: $hook is a custom hook. Review it (does it run anything from the checkout?)," >&2
+    echo "then either delete it, or move it to $hook.legacy to keep it running before the guard," >&2
+    echo "and re-run." >&2
+    exit 1
   fi
 fi
 
 cat > "$hook" <<EOF
 #!/bin/sh
 $mark
-# Written by .secret-guard/activate.sh. A kept earlier hook runs first, so the guard scans
-# the index as it will be committed.
+# Written by .secret-guard/activate.sh. A reviewed pre-commit.legacy, if you placed one, runs
+# first, so the guard scans the index as it will be committed.
 EOF
 cat >> "$hook" <<'EOF'
 d=$(git rev-parse --path-format=absolute --git-common-dir)
