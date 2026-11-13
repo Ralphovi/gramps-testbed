@@ -18,8 +18,6 @@
 #
 # Known limits (accepted, not enforced here):
 # - Git LFS: a path a branch routes through LFS is scanned as its pointer, not its content.
-# - extensions.worktreeConfig: a per-worktree core.hooksPath is checked only for the worktree
-#   that runs activation.
 # - A core.hooksPath hook outside every checkout is yours: activation checks that it contains
 #   the runner line, not what runs before it.
 # - An absolute hooks path (or a symlink target) that passes through a checkout directory and
@@ -31,6 +29,7 @@
 # - A separate git directory placed inside an ignored path of a worktree is not detected.
 # - --uninstall removes only hooks with the managed marker; an older two-line guard hook
 #   from before the marker stays and must be deleted by hand.
+# - Worktree paths containing a newline are not recognised as checkouts.
 # - --no-verify skips every hook; push protection on GitHub is the backstop.
 set -eu
 
@@ -51,14 +50,32 @@ esac
 
 d=$(git rev-parse --path-format=absolute --git-common-dir)
 hook="$d/hooks/pre-commit"
-mark="# secret-guard managed hook v9"
+mark="# secret-guard managed hook v10"
 # The line a core.hooksPath hook (outside every checkout) must contain to run the guard.
 req='exec "$(git rev-parse --path-format=absolute --git-common-dir)/secret-guard-run" "$@"'
 
 # --- where branches can write ---------------------------------------------------------------
 # Every worktree of this repository is checkout content a branch controls.
-worktrees=$(git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r w; do
-  (cd "$w" 2>/dev/null && pwd -P) || true; done)
+# A bare repository's own entry (marked `bare`) is a git directory, not a checkout.
+worktrees=$(git worktree list --porcelain |
+  awk '/^worktree /{ if (p != "" && !b) print p; p = substr($0, 10); b = 0; next }
+       /^bare$/ { b = 1 }
+       END { if (p != "" && !b) print p }' |
+  while IFS= read -r w; do (cd "$w" 2>/dev/null && pwd -P) || true; done)
+
+# With extensions.worktreeConfig, each worktree may set its own core.hooksPath, and Git in
+# that worktree ignores the hook installed here. Refuse any such override.
+if [ "$(git config --bool extensions.worktreeConfig 2>/dev/null || true)" = true ]; then
+  overrides=$(printf '%s\n' "$worktrees" | while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    if git -C "$w" config --worktree --get core.hooksPath >/dev/null 2>&1; then echo "$w"; fi
+  done)
+  if [ -n "$overrides" ] && [ "${1:-}" != --uninstall ]; then
+    die "these worktrees set their own core.hooksPath (extensions.worktreeConfig), so Git there" \
+      "would not run the guard:" "$overrides" \
+      "Unset it in each (git -C <worktree> config --worktree --unset core.hooksPath), then re-run."
+  fi
+fi
 
 git_dir_real=$(cd "$d" && pwd -P)
 
