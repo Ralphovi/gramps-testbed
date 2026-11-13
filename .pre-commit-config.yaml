@@ -82,5 +82,5 @@ repos:
       - id: gitleaks
         alias: gitleaks-staged-files
         name: Detect hardcoded secrets (staged files, git attributes ignored)
-        entry: sh -c 'for f in "$@"; do gitleaks dir --no-banner --redact --ignore-gitleaks-allow "$f" || exit 1; done' --
+        entry: sh -c 'for f in "$@"; do gitleaks dir --no-banner --redact --ignore-gitleaks-allow -- "$f" || exit 1; done' --
         pass_filenames: true

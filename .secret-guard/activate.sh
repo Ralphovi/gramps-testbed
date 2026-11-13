@@ -6,7 +6,8 @@
 #   s=$(git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate
 #
 # Re-run it after .pre-commit-config.yaml or this script changes on the default branch.
-# Remove the guard: the same command with `activate --uninstall`.
+# Remove the guard: the same command with `activate --uninstall`. Keep a reviewed earlier hook
+# as .git/hooks/pre-commit.legacy and approve it with `activate --approve-legacy`.
 #
 # Why not `pre-commit install`: its hook reads the checked-out .pre-commit-config.yaml, and
 # gitleaks reads a checked-out .gitleaks.toml and .gitleaksignore, so checking out a fork PR
@@ -24,11 +25,23 @@ esac
 d=$(git rev-parse --path-format=absolute --git-common-dir)
 top=$(git rev-parse --show-toplevel)
 hook="$d/hooks/pre-commit"
-mark="# secret-guard managed hook v4"
+mark="# secret-guard managed hook v5"
 # The line a core.hooksPath hook (outside the checkout) must contain to run the guard.
 req='exec "$(git rev-parse --path-format=absolute --git-common-dir)/secret-guard-run" "$@"'
 
-hooks_path=$(git config core.hooksPath || true)
+# inside PATH: true when PATH (file or directory, symlinks and .. resolved) lies in the checkout.
+real_top=$(cd "$top" && pwd -P)
+# Both the entry itself (its directory resolved) and its final target are checked: a symlink
+# that sits in the checkout can be replaced by a branch even if it points outside.
+inside() {
+  r=$(readlink -f -- "$1" 2>/dev/null) || return 0   # unresolvable: treat as inside (refuse)
+  case $r/ in "$real_top"/*) return 0;; esac
+  p=$(cd "$(dirname -- "$1")" 2>/dev/null && pwd -P) || return 0
+  case $p/ in "$real_top"/*) return 0;; esac
+  return 1
+}
+
+hooks_path=$(git config --path core.hooksPath || true)   # --path: ~ expands as Git does
 hp=""
 if [ -n "$hooks_path" ]; then
   case $hooks_path in
@@ -47,7 +60,7 @@ if [ "${1:-}" = --uninstall ]; then
     rm -f "$hook"
     if [ -e "$hook.legacy" ]; then mv "$hook.legacy" "$hook"; fi
   fi
-  rm -f "$d/secret-guard-run" "$d/secret-guard.yaml" "$d/secret-guard-gitleaks.toml" "$d/secret-guard-pre-commit"
+  rm -f "$d/secret-guard-run" "$d/secret-guard.yaml" "$d/secret-guard-gitleaks.toml" "$d/secret-guard-pre-commit" "$d/secret-guard-legacy.approved"
   echo "secret guard removed"
   exit 0
 fi
@@ -58,16 +71,23 @@ case $pc in
   /*) ;;
   *) echo "secret guard: pre-commit resolves to '$pc', not an absolute path" >&2; exit 1;;
 esac
+if inside "$pc"; then
+  echo "secret guard: pre-commit ($pc) is inside the checkout, where a branch can replace it;" >&2
+  echo "put the pipx (or system) pre-commit first on PATH and re-run." >&2
+  exit 1
+fi
+pc=$(readlink -f -- "$pc")
 
-# Refuse a hooks directory inside the checkout before writing anything: a branch can rewrite it.
+# Refuse a hooks directory, or a pre-commit hook in it, that lies in the checkout (symlinks
+# and .. resolved), before writing anything: a checked-out branch could rewrite it.
 if [ -n "$hp" ]; then
-  case $hp/ in
-    "$top"/*)
-      echo "secret guard: core.hooksPath ($hooks_path) is inside the checkout, so a checked-out" >&2
-      echo "branch can replace its hooks. Unset it (git config --unset core.hooksPath), copy any" >&2
-      echo "hook you still want into $d/hooks after reviewing it, then re-run." >&2
-      exit 1;;
-  esac
+  if [ ! -d "$hp" ] || inside "$hp" || { [ -e "$hp/pre-commit" ] && inside "$hp/pre-commit"; }; then
+    echo "secret guard: core.hooksPath ($hooks_path) or its pre-commit hook is inside the checkout" >&2
+    echo "(or does not resolve), so a checked-out branch could replace it. Point core.hooksPath at a" >&2
+    echo "directory outside the checkout, or unset it (git config --unset core.hooksPath) and copy" >&2
+    echo "any hook you still want into $d/hooks after reviewing it, then re-run." >&2
+    exit 1
+  fi
 fi
 
 git show "$ref:.pre-commit-config.yaml" > "$d/secret-guard.yaml"
@@ -115,9 +135,25 @@ if [ -e "$hook" ] && ! grep -q 'secret-guard managed hook' "$hook"; then
   else
     # An unknown hook may run checkout content; keeping it is the user's call, after review.
     echo "secret guard: $hook is a custom hook. Review it (does it run anything from the checkout?)," >&2
-    echo "then either delete it, or move it to $hook.legacy to keep it running before the guard," >&2
-    echo "and re-run." >&2
+    echo "then either delete it, or move it to $hook.legacy and re-run with --approve-legacy to keep" >&2
+    echo "it running before the guard." >&2
     exit 1
+  fi
+fi
+
+# A pre-commit.legacy runs before the guard only when you approved this exact content.
+if [ -e "$hook.legacy" ]; then
+  sum=$(git hash-object -- "$hook.legacy")
+  if [ "$(cat "$d/secret-guard-legacy.approved" 2>/dev/null || true)" != "$sum" ]; then
+    if [ "${2:-}" = --approve-legacy ] || [ "${1:-}" = --approve-legacy ]; then
+      printf '%s\n' "$sum" > "$d/secret-guard-legacy.approved"
+      echo "secret guard: approved $hook.legacy (git hash $sum); it runs before the guard"
+    else
+      echo "secret guard: $hook.legacy will run before the guard on every commit. Review it (does it" >&2
+      echo "run anything from the checkout?), then re-run with: activate --approve-legacy" >&2
+      echo "or delete it." >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -129,7 +165,14 @@ $mark
 EOF
 cat >> "$hook" <<'EOF'
 d=$(git rev-parse --path-format=absolute --git-common-dir)
-if [ -x "$d/hooks/pre-commit.legacy" ]; then "$d/hooks/pre-commit.legacy" "$@" || exit $?; fi
+if [ -e "$d/hooks/pre-commit.legacy" ]; then
+  # Runs only the content approved at activation; anything else stops the commit.
+  if [ "$(git hash-object -- "$d/hooks/pre-commit.legacy")" != "$(cat "$d/secret-guard-legacy.approved" 2>/dev/null)" ]; then
+    echo "secret guard: hooks/pre-commit.legacy changed since it was approved; re-run activation" >&2
+    exit 1
+  fi
+  "$d/hooks/pre-commit.legacy" "$@" || exit $?
+fi
 exec "$d/secret-guard-run" "$@"
 EOF
 chmod +x "$hook"
