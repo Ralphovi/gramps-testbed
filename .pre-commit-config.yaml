@@ -76,11 +76,13 @@ repos:
     hooks:
       - id: gitleaks
         args: [--ignore-gitleaks-allow]   # a branch's `gitleaks:allow` comments are not trusted
-      # Scans the staged files themselves: the hook above reads `git diff`, which a branch's
-      # .gitattributes can turn into "Binary files differ" (`-diff`). pre-commit has hidden
-      # unstaged changes, so the files on disk are the staged content.
+      # Scans the staged blobs themselves, as Git will commit them: the hook above reads
+      # `git diff`, which a branch's .gitattributes can turn into "Binary files differ"
+      # (`-diff`), and an encoding attribute can make the checkout differ from the index.
+      # No filename reaches gitleaks, so none can be read as an option.
       - id: gitleaks
-        alias: gitleaks-staged-files
-        name: Detect hardcoded secrets (staged files, git attributes ignored)
-        entry: sh -c 'for f in "$@"; do gitleaks dir --no-banner --redact --ignore-gitleaks-allow -- "$f" || exit 1; done' --
+        alias: gitleaks-staged-blobs
+        name: Detect hardcoded secrets (staged blobs, git attributes ignored)
+        entry: sh -c 'for f in "$@"; do git cat-file -e ":$f" || exit 1; git cat-file blob ":$f" | gitleaks stdin --no-banner --redact --ignore-gitleaks-allow || exit 1; done' --
         pass_filenames: true
+        types: [file]
