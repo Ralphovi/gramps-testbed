@@ -1,13 +1,11 @@
 # Secret guard: blocks commits that would publish credentials.
-# Activate once per clone, from the default branch (re-run after this file changes there):
+# Activate once per clone, with the default branch's reviewed script (re-run it after this
+# file or the script changes there):
 #   pipx install pre-commit==4.7.0
-#   d=$(git rev-parse --path-format=absolute --git-common-dir)
-#   git show origin/HEAD:.pre-commit-config.yaml > "$d/secret-guard.yaml"
-#   printf '#!/bin/sh\nexec pre-commit run --config "%s/secret-guard.yaml" --hook-stage pre-commit\n' \
-#     "$d" > "$d/hooks/pre-commit" && chmod +x "$d/hooks/pre-commit"
-# The hook reads that reviewed copy, not the checked-out file, so a branch (a fork PR
-# checked out locally) cannot redefine what runs on commit. Plain `pre-commit install`
-# would read the checked-out file.
+#   git show origin/HEAD:.secret-guard/activate.sh | sh
+# The hook reads copies of this file and of the gitleaks policy kept in the git directory,
+# so a checked-out branch (a fork PR) cannot redefine what runs on commit. Do not use plain
+# `pre-commit install`: its hook reads the checked-out file.
 #
 # Why: Claude Code saves approved shell commands verbatim (tokens included) to
 # .claude/settings.local.json. .gitignore does not stop `git add -f`, a fresh clone
