@@ -15,6 +15,14 @@
 # written here reads copies kept in the git directory, pins gitleaks to its built-in rules,
 # refuses to commit while a .gitleaksignore is in the checkout or the index, and refuses any
 # hook, hooks directory or pre-commit executable that a checked-out branch could replace.
+#
+# Known limits (accepted, not enforced here):
+# - Git LFS: a path a branch routes through LFS is scanned as its pointer, not its content.
+# - extensions.worktreeConfig: a per-worktree core.hooksPath is checked only for the worktree
+#   that runs activation.
+# - A core.hooksPath hook outside every checkout is yours: activation checks that it contains
+#   the runner line, not what runs before it.
+# - --no-verify skips every hook; push protection on GitHub is the backstop.
 set -eu
 
 # Every command below comes from system directories, never a checkout (a fork could track
@@ -34,7 +42,7 @@ esac
 
 d=$(git rev-parse --path-format=absolute --git-common-dir)
 hook="$d/hooks/pre-commit"
-mark="# secret-guard managed hook v7"
+mark="# secret-guard managed hook v8"
 # The line a core.hooksPath hook (outside every checkout) must contain to run the guard.
 req='exec "$(git rev-parse --path-format=absolute --git-common-dir)/secret-guard-run" "$@"'
 
@@ -45,36 +53,68 @@ worktrees=$(git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS
 
 git_dir_real=$(cd "$d" && pwd -P)
 
-in_worktree() {   # $1: a physical path. The git directory is not checkout content.
-  case $1/ in "$git_dir_real"/*) return 1;; esac
+# in_worktree PATH (physical): PATH lies in a worktree of this repository. Paths in the git
+# directory are not checkout content, unless a worktree itself lives inside the git directory.
+in_worktree() {
   printf '%s\n' "$worktrees" | while IFS= read -r w; do
     [ -n "$w" ] || continue
-    case $1/ in "$w"/*) echo yes; break;; esac
+    case $1/ in
+      "$w"/*)
+        case $w/ in "$git_dir_real"/*) echo yes; break;; esac
+        case $1/ in "$git_dir_real"/*) continue;; esac
+        echo yes; break;;
+    esac
   done | grep -q yes
 }
 
-# unsafe PATH: true when PATH, any symlink along it, or its final target lies in a worktree,
-# or it cannot be resolved. Each symlink component is checked where it sits and where it points.
-unsafe() {
-  target=$(readlink -f -- "$1" 2>/dev/null) || return 0
-  in_worktree "$target" && return 0
-  acc=""
-  rest=$1
-  case $rest in /*) ;; *) rest="$(pwd -P)/$rest";; esac
-  old_ifs=$IFS; IFS=/
-  set -f
-  for part in $rest; do
-    [ -n "$part" ] || continue
-    acc="$acc/$part"
-    if [ -L "$acc" ]; then
-      loc=$(cd "$(dirname -- "$acc")" 2>/dev/null && pwd -P) || { IFS=$old_ifs; set +f; return 0; }
-      if in_worktree "$loc" || in_worktree "$(readlink -f -- "$acc" 2>/dev/null || echo /)"; then
-        IFS=$old_ifs; set +f; return 0
+# in_any_checkout PATH (physical directory): PATH lies in the work tree of any repository.
+in_any_checkout() {
+  [ "$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR \
+        git -C "$1" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]
+}
+
+# phys PATH: the physical form of a path whose components are no longer symlinks.
+phys() {
+  if [ -d "$1" ]; then (cd "$1" && pwd -P)
+  else printf '%s/%s\n' "$(cd "$(dirname -- "$1")" && pwd -P)" "$(basename -- "$1")"; fi
+}
+
+# chain_unsafe MODE PATH: follow PATH one symlink hop at a time (up to 40). True when the place
+# any link sits, or the final target, lies in a checkout, or PATH cannot be followed. MODE
+# "any" also counts other repositories' work trees (for hooks); "repo" only this repository's
+# worktrees (for the pre-commit executable).
+chain_unsafe() {
+  mode=$1; p=$2
+  case $p in /*) ;; *) p="$(pwd -P)/$p";; esac
+  hops=0
+  while :; do
+    hops=$((hops + 1)); [ "$hops" -le 40 ] || return 0
+    acc=""; rest=""; link=""
+    old_ifs=$IFS; IFS=/; set -f
+    for part in $p; do
+      [ -n "$part" ] || continue
+      if [ -n "$link" ]; then rest="$rest/$part"; continue; fi
+      acc="$acc/$part"
+      [ -L "$acc" ] && link=$acc
+    done
+    IFS=$old_ifs; set +f
+    if [ -z "$link" ]; then
+      [ -e "$p" ] || [ -L "$p" ] || return 0
+      final=$(phys "$p") || return 0
+      in_worktree "$final" && return 0
+      if [ "$mode" = any ]; then
+        dir=$final; [ -d "$dir" ] || dir=$(dirname -- "$final")
+        in_any_checkout "$dir" && return 0
       fi
+      return 1
     fi
+    at=$(cd "$(dirname -- "$link")" 2>/dev/null && pwd -P) || return 0
+    in_worktree "$at" && return 0
+    if [ "$mode" = any ] && in_any_checkout "$at"; then return 0; fi
+    t=$(readlink -- "$link") || return 0
+    case $t in /*) ;; *) t="$(dirname -- "$link")/$t";; esac
+    p="$t$rest"
   done
-  IFS=$old_ifs; set +f
-  return 1
 }
 
 # --- core.hooksPath ---------------------------------------------------------------------------
@@ -88,7 +128,8 @@ if git config --get core.hooksPath >/dev/null 2>&1; then
     "unset it (git config --unset core.hooksPath) or point it at a directory, then re-run."
   case $hooks_path in
     /*) hp=$hooks_path;;
-    *) hp="$(git rev-parse --show-toplevel)/$hooks_path";;
+    *) die "core.hooksPath ($hooks_path) is relative, so each worktree resolves it to a different" \
+         "directory; set an absolute path outside every checkout, then re-run.";;
   esac
 fi
 
@@ -109,7 +150,7 @@ fi
 # --- validate everything before changing anything -------------------------------------------
 pc=$(PATH=$caller_path; command -v pre-commit) || die "pre-commit not found; pipx install pre-commit==4.7.0"
 case $pc in /*) ;; *) die "pre-commit resolves to '$pc', not an absolute path";; esac
-if unsafe "$pc"; then
+if chain_unsafe repo "$pc"; then
   die "pre-commit ($pc) is in, or resolves through, a checkout of this repository, where a" \
     "branch can replace it; put the pipx (or system) pre-commit first on PATH and re-run."
 fi
@@ -117,7 +158,7 @@ pc=$(readlink -f -- "$pc")
 
 legacy_sum=""
 if [ "$hooks_set" = yes ]; then
-  if [ ! -d "$hp" ] || unsafe "$hp" || { [ -e "$hp/pre-commit" ] && unsafe "$hp/pre-commit"; }; then
+  if [ ! -d "$hp" ] || chain_unsafe any "$hp" || { [ -e "$hp/pre-commit" ] && chain_unsafe any "$hp/pre-commit"; }; then
     die "core.hooksPath ($hooks_path), or its pre-commit hook, is in or resolves through a" \
       "checkout of this repository (or does not resolve), so a branch could replace it. Point" \
       "core.hooksPath at a directory outside every checkout, or unset it and copy any hook you" \
@@ -128,7 +169,7 @@ if [ "$hooks_set" = yes ]; then
       "Make $hooks_path/pre-commit executable and end it with this exact line:" "  $req"
   fi
 else
-  if unsafe "$d/hooks" || { { [ -e "$hook" ] || [ -L "$hook" ]; } && unsafe "$hook"; }; then
+  if chain_unsafe any "$d/hooks" || { { [ -e "$hook" ] || [ -L "$hook" ]; } && chain_unsafe any "$hook"; }; then
     die "$d/hooks, or the pre-commit hook in it, is in or resolves into a checkout of this" \
       "repository, so a branch could replace it. Make $d/hooks a plain directory and remove" \
       "the symlinked hook, then re-run."
