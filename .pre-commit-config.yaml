@@ -2,7 +2,7 @@
 # Activate once per clone, with the default branch's reviewed script (re-run it after this
 # file or the script changes there):
 #   pipx install pre-commit==4.7.0
-#   s=$(git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate
+#   s=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && /bin/sh -c "$s" activate
 # The hook reads copies of this file and of the gitleaks policy kept in the git directory
 # and refuses a checked-out or staged .gitleaksignore, so a checked-out branch (a fork PR)
 # cannot redefine what runs on commit. Do not use plain `pre-commit install`: its hook reads
@@ -79,10 +79,11 @@ repos:
       # Scans the staged blobs themselves, as Git will commit them: the hook above reads
       # `git diff`, which a branch's .gitattributes can turn into "Binary files differ"
       # (`-diff`), and an encoding attribute can make the checkout differ from the index.
-      # No filename reaches gitleaks, so none can be read as an option.
+      # No filename reaches gitleaks, so none can be read as an option; ":0:" names stage 0
+      # explicitly, so a filename containing a colon cannot select another blob.
       - id: gitleaks
         alias: gitleaks-staged-blobs
         name: Detect hardcoded secrets (staged blobs, git attributes ignored)
-        entry: sh -c 'for f in "$@"; do git cat-file -e ":$f" || exit 1; git cat-file blob ":$f" | gitleaks stdin --no-banner --redact --ignore-gitleaks-allow || exit 1; done' --
+        entry: sh -c 'for f in "$@"; do git cat-file -e ":0:$f" || exit 1; git cat-file blob ":0:$f" | gitleaks stdin --no-banner --redact --ignore-gitleaks-allow || exit 1; done' --
         pass_filenames: true
         types: [file]

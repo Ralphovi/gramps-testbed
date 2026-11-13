@@ -3,7 +3,7 @@
 # reviewed copy of this script, never the checked-out one:
 #
 #   pipx install pre-commit==4.7.0
-#   s=$(git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate
+#   s=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && /bin/sh -c "$s" activate
 #
 # Re-run it after .pre-commit-config.yaml or this script changes on the default branch.
 # Remove the guard: the same command with `activate --uninstall`. Keep a reviewed earlier hook
@@ -17,6 +17,13 @@
 # hook, hooks directory or pre-commit executable that a checked-out branch could replace.
 set -eu
 
+# Every command below comes from system directories, never a checkout (a fork could track
+# .venv/bin/git). The caller's PATH is consulted once, only to locate pre-commit, which is
+# then checked like any other path.
+safe_path=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin
+caller_path=$PATH
+PATH=$safe_path; export PATH
+
 die() { for line in "$@"; do echo "secret guard: $line" >&2; done; exit 1; }
 
 ref=${SECRET_GUARD_REF:-refs/remotes/origin/HEAD}
@@ -27,11 +34,9 @@ esac
 
 d=$(git rev-parse --path-format=absolute --git-common-dir)
 hook="$d/hooks/pre-commit"
-mark="# secret-guard managed hook v6"
+mark="# secret-guard managed hook v7"
 # The line a core.hooksPath hook (outside every checkout) must contain to run the guard.
 req='exec "$(git rev-parse --path-format=absolute --git-common-dir)/secret-guard-run" "$@"'
-# Commands the hook and runner may use come from these directories only, never a checkout.
-safe_path=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin
 
 # --- where branches can write ---------------------------------------------------------------
 # Every worktree of this repository is checkout content a branch controls.
@@ -102,7 +107,7 @@ if [ "${1:-}" = --uninstall ]; then
 fi
 
 # --- validate everything before changing anything -------------------------------------------
-pc=$(command -v pre-commit) || die "pre-commit not found; pipx install pre-commit==4.7.0"
+pc=$(PATH=$caller_path; command -v pre-commit) || die "pre-commit not found; pipx install pre-commit==4.7.0"
 case $pc in /*) ;; *) die "pre-commit resolves to '$pc', not an absolute path";; esac
 if unsafe "$pc"; then
   die "pre-commit ($pc) is in, or resolves through, a checkout of this repository, where a" \

@@ -82,7 +82,7 @@ if [[ "$mode" == "install" ]]; then
     # from the git directory. `pre-commit install --overwrite` would replace it with a hook that
     # reads the checked-out config.
     echo "==> gramps-testbed: activating the secret guard (root config)"
-    ( cd "$TESTBED_ROOT" && s=$(git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate )
+    ( cd "$TESTBED_ROOT" && s=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && /bin/sh -c "$s" activate )
 
     action_install "gramps"        "$GRAMPS_REPO" "$GRAMPS_CONFIG"
     action_install "addons-source" "$ADDONS_REPO" "$ADDONS_CONFIG"
@@ -92,7 +92,7 @@ if [[ "$mode" == "install" ]]; then
     echo "Skip with 'git commit --no-verify' (only if you know why)."
 else
     echo "==> gramps-testbed: removing the secret guard"
-    ( cd "$TESTBED_ROOT" && s=$(git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate --uninstall )
+    ( cd "$TESTBED_ROOT" && s=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin git show refs/remotes/origin/HEAD:.secret-guard/activate.sh) && /bin/sh -c "$s" activate --uninstall )
     action_uninstall "gramps"        "$GRAMPS_REPO"
     action_uninstall "addons-source" "$ADDONS_REPO"
 fi
