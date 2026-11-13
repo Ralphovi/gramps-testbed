@@ -1,7 +1,22 @@
+# Secret guard: blocks commits that would publish credentials.
+# Activate once per clone, from the default branch (re-run after this file changes there):
+#   pipx install pre-commit==4.7.0
+#   d=$(git rev-parse --path-format=absolute --git-common-dir)
+#   git show origin/HEAD:.pre-commit-config.yaml > "$d/secret-guard.yaml"
+#   printf '#!/bin/sh\nexec pre-commit run --config "%s/secret-guard.yaml" --hook-stage pre-commit\n' \
+#     "$d" > "$d/hooks/pre-commit" && chmod +x "$d/hooks/pre-commit"
+# The hook reads that reviewed copy, not the checked-out file, so a branch (a fork PR
+# checked out locally) cannot redefine what runs on commit. Plain `pre-commit install`
+# would read the checked-out file.
+#
+# Why: Claude Code saves approved shell commands verbatim (tokens included) to
+# .claude/settings.local.json. .gitignore does not stop `git add -f`, a fresh clone
+# without the global ignore, or a file created before the ignore rule existed.
+#
 # Pre-commit config for gramps-testbed itself.
 #
 # Lives at repo root (standard pre-commit layout) so cloning the
-# testbed + running `pre-commit install` is the only setup needed.
+# testbed + activating it as the secret-guard header above says is the only setup needed.
 # The gramps and addons-source fork configs live under
 # agent-work/dev-tooling/pre-commit/ and are installed via install.sh.
 #
@@ -58,6 +73,6 @@ repos:
         files: '(^|/)(\.claude/settings\.local\.json[^/]*|CLAUDE\.local\.md|\.credentials\.json|\.env)$'
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # v8.30.1
     hooks:
       - id: gitleaks
