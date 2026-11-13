@@ -2,10 +2,11 @@
 # Activate once per clone, with the default branch's reviewed script (re-run it after this
 # file or the script changes there):
 #   pipx install pre-commit==4.7.0
-#   git show origin/HEAD:.secret-guard/activate.sh | sh
-# The hook reads copies of this file and of the gitleaks policy kept in the git directory,
-# so a checked-out branch (a fork PR) cannot redefine what runs on commit. Do not use plain
-# `pre-commit install`: its hook reads the checked-out file.
+#   s=$(git show origin/HEAD:.secret-guard/activate.sh) && sh -c "$s" activate
+# The hook reads copies of this file and of the gitleaks policy kept in the git directory
+# and refuses a checked-out .gitleaksignore, so a checked-out branch (a fork PR) cannot
+# redefine what runs on commit. Do not use plain `pre-commit install`: its hook reads the
+# checked-out file.
 #
 # Why: Claude Code saves approved shell commands verbatim (tokens included) to
 # .claude/settings.local.json. .gitignore does not stop `git add -f`, a fresh clone
