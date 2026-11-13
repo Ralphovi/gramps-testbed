@@ -21,3 +21,7 @@ agent-work/data/
 agent-work/notes/
 agent-work/dev-tooling/findings/
 .wikiscrape/
+
+# Claude Code machine-local files: may hold recorded commands with secrets; never commit
+**/.claude/settings.local.json*
+CLAUDE.local.md

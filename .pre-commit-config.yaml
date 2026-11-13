@@ -46,3 +46,18 @@ repos:
         entry: python3 -c "import ast,sys;[ast.parse(open(p).read(),p) for p in sys.argv[1:]]"
         files: \.py$
         exclude: ^agent-work/
+
+  # Secret guard. Why: Claude Code saves approved shell commands verbatim (tokens
+  # included) to .claude/settings.local.json, and .gitignore does not stop `git add -f`.
+  - repo: local
+    hooks:
+      - id: forbid-machine-local-files
+        name: forbid machine-local files (Claude local settings, credentials)
+        language: fail
+        entry: "machine-local file, may hold recorded commands with secrets; never commit it (git restore --staged <path>)"
+        files: '(^|/)(\.claude/settings\.local\.json[^/]*|CLAUDE\.local\.md|\.credentials\.json|\.env)$'
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
