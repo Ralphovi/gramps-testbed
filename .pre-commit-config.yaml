@@ -69,7 +69,7 @@ repos:
         name: forbid machine-local files (Claude local settings, credentials)
         language: fail
         entry: "machine-local file, may hold recorded commands with secrets; never commit it (git restore --staged <path>)"
-        files: '(^|/)(\.claude/settings\.local\.json[^/]*|CLAUDE\.local\.md|\.credentials\.json|\.env)$'
+        files: '(?i)(^|/)(\.claude/settings\.local\.json[^/]*|CLAUDE\.local\.md|\.credentials\.json|\.env)$'
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # v8.30.1
